@@ -1,12 +1,12 @@
+
+#r "../lib/Microsoft.SqlServer.TransactSql.ScriptDom.dll"
+#r "../src/FsSqlDom/bin/Debug/FsSqlDom.dll"
 open System
 open System.IO
 open System.Data
 open System.Data.SqlClient
 open System.Collections.Generic
-
-#r "../lib/Microsoft.SqlServer.TransactSql.ScriptDom.dll"
-#r "../bin/FsSqlDom/FsSqlDom.dll"
-
+open Microsoft.SqlServer.TransactSql.ScriptDom
 open Microsoft.SqlServer.TransactSql
 open FsSqlDom.Dom
 
@@ -57,10 +57,7 @@ let parse (sql:string) =
     Choice2Of2(errs)
 
 type ExprUtils =
-  static member GetName(ident:Identifier) : string =
-    match ident with
-    | Identifier.Base(QuoteType=quoteType; Value=Some(v)) -> v
-    | _ -> failwith "Not implemented yet"
+  static member GetName(ident:Identifier) : string = ident.Value
       
   static member GetName(mult:MultiPartIdentifier) : string list  =
     match mult with
@@ -71,24 +68,24 @@ type ExprUtils =
     match so with
     | SchemaObjectName.ChildObjectName(baseIdentifier, childIdentifier, count, databaseIdentifier, identifiers, schemaIdentifier, serverIdentifier) -> failwith "Not implemented yet"
     | SchemaObjectName.SchemaObjectNameSnippet(baseIdentifier, count, databaseIdentifier, identifiers, schemaIdentifier, script, serverIdentifier) -> failwith "Not implemented yet"
-    | SchemaObjectName.Base(Identifiers=identifiers) -> 
+    | SchemaObjectName.Base(identifiers=identifiers) -> 
       identifiers |> List.map ExprUtils.GetName 
   
   static member GetName(idOrVal:IdentifierOrValueExpression) : string  =
     match idOrVal with
-    | IdentifierOrValueExpression.IdentifierOrValueExpression(Identifier=Some(ident)) ->
+    | IdentifierOrValueExpression.IdentifierOrValueExpression(identifier=Some(ident)) ->
       ExprUtils.GetName ident
     | _ -> failwith "Can't get name of expr without identifier"
 
   static member GetName(so:SchemaObjectNameOrValueExpression) : string list  =
     match so with
-    | SchemaObjectNameOrValueExpression.SchemaObjectNameOrValueExpression(SchemaObjectName=Some(son)) ->
+    | SchemaObjectNameOrValueExpression.SchemaObjectNameOrValueExpression(schemaObjectName=Some(son)) ->
       ExprUtils.GetName(son)
     | _ -> failwith "Can't get name, missing schema object"
 
   static member GetName(tra:TableReferenceWithAlias) : string option * string list =
     match tra with
-    | TableReferenceWithAlias.NamedTableReference(Alias=alias; SchemaObject=Some(schemaObject)) -> 
+    | TableReferenceWithAlias.NamedTableReference(alias=alias; schemaObject=Some(schemaObject)) -> 
       (alias |> Option.map ExprUtils.GetName), (ExprUtils.GetName(schemaObject))
     | _ -> failwith "Not implemented yet"
 
@@ -193,27 +190,25 @@ let rec processJoins (ctx:JoinAnalyzer) (table:TableReference) (depth:int) : uni
   match table with
   | TableReference.TableReferenceWithAlias
       (TableReferenceWithAlias.NamedTableReference
-        (Alias=alias; SchemaObject=Some
-          (schemaObject))) ->
-          let aliasName = alias |> Option.map (ExprUtils.GetName)
-          let name = ExprUtils.GetName schemaObject |> String.concat "."
-          ctx.AddMapping (name, aliasName)
+        (alias=alias; schemaObject=Some(schemaObject))) ->
+    let aliasName = alias |> Option.map (ExprUtils.GetName)
+    let name = ExprUtils.GetName schemaObject |> String.concat "."
+    ctx.AddMapping (name, aliasName)
 
   | TableReference.JoinParenthesisTableReference(Some(join)) ->
     processJoins ctx join (depth + 1)
   | TableReference.JoinTableReference(join) ->
     match join with
-    | JoinTableReference.UnqualifiedJoin(FirstTableReference=Some(firstTableReference); SecondTableReference=Some(secondTableReference)) ->
+    | JoinTableReference.UnqualifiedJoin(firstTableReference=Some(firstTableReference); secondTableReference=Some(secondTableReference)) ->
       processJoins ctx firstTableReference depth
       processJoins ctx secondTableReference depth
-    | JoinTableReference.QualifiedJoin(FirstTableReference=Some(firstTableReference); SecondTableReference=Some(secondTableReference); SearchCondition=searchCond) ->
+    | JoinTableReference.QualifiedJoin(firstTableReference=Some(firstTableReference); secondTableReference=Some(secondTableReference); searchCondition=searchCond) ->
       processJoins ctx firstTableReference depth
       processJoins ctx secondTableReference depth
       searchCond |> Option.iter (fun searchCond -> ctx.AddConditions searchCond)
     | _ -> ()
-  | x ->
-    let s = x.ToCs() |> FsSqlDom.Util.renderCs
-    failwithf "Don't know how to get table name for %A" s
+  | x -> 
+    failwithf "Don't know how to get table name for %A" x
 
 let findFromClause (frag:ScriptDom.TSqlFragment) =
   let mutable ret = None
@@ -350,7 +345,7 @@ let run() =
         | Some(fromC) ->
             let ctx = JoinAnalyzer()
             for tRef in fromC.TableReferences do
-              let table = tRef |> TableReference.FromCs
+              let table = TableReference.FromCs tRef
               try processJoins ctx table 0
               with ex -> failwithf "Ignoring error %s" ex.Message
             for x in ctx.condConnections do ignore <| relationships.Add x

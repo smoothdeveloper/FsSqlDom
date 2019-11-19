@@ -79,7 +79,7 @@ let parse (sql:string) =
 type ExprUtils =
   static member GetName(ident:Identifier) : string =
     match ident with
-    | Identifier.Base(QuoteType=quoteType; Value=Some(v)) -> v
+    | Identifier.Base(quoteType=quoteType; value=v) -> v
     | _ -> failwith "Not implemented yet"
       
   static member GetName(mult:MultiPartIdentifier) : string list  =
@@ -91,24 +91,24 @@ type ExprUtils =
     match so with
     | SchemaObjectName.ChildObjectName(baseIdentifier, childIdentifier, count, databaseIdentifier, identifiers, schemaIdentifier, serverIdentifier) -> failwith "Not implemented yet"
     | SchemaObjectName.SchemaObjectNameSnippet(baseIdentifier, count, databaseIdentifier, identifiers, schemaIdentifier, script, serverIdentifier) -> failwith "Not implemented yet"
-    | SchemaObjectName.Base(Identifiers=identifiers) -> 
+    | SchemaObjectName.Base(identifiers=identifiers) -> 
       identifiers |> List.map ExprUtils.GetName 
   
   static member GetName(idOrVal:IdentifierOrValueExpression) : string  =
     match idOrVal with
-    | IdentifierOrValueExpression.IdentifierOrValueExpression(Identifier=Some(ident)) ->
+    | IdentifierOrValueExpression.IdentifierOrValueExpression(identifier=Some(ident)) ->
       ExprUtils.GetName ident
     | _ -> failwith "Can't get name of expr without identifier"
 
   static member GetName(so:SchemaObjectNameOrValueExpression) : string list  =
     match so with
-    | SchemaObjectNameOrValueExpression.SchemaObjectNameOrValueExpression(SchemaObjectName=Some(son)) ->
+    | SchemaObjectNameOrValueExpression.SchemaObjectNameOrValueExpression(schemaObjectName=Some(son)) ->
       ExprUtils.GetName(son)
     | _ -> failwith "Can't get name, missing schema object"
 
   static member GetName(tra:TableReferenceWithAlias) : string option * string list =
     match tra with
-    | TableReferenceWithAlias.NamedTableReference(Alias=alias; SchemaObject=Some(schemaObject)) -> 
+    | TableReferenceWithAlias.NamedTableReference(alias=alias; schemaObject=Some(schemaObject)) -> 
       (alias |> Option.map ExprUtils.GetName), (ExprUtils.GetName(schemaObject))
     | _ -> failwith "Not implemented yet"
 
@@ -197,7 +197,7 @@ let rec processJoins (ctx:JoinAnalyzer) (table:TableReference) (depth:int) : uni
   match table with
   | TableReference.TableReferenceWithAlias
       (TableReferenceWithAlias.NamedTableReference
-        (Alias=alias; SchemaObject=Some
+        (alias=alias; schemaObject=Some
           (schemaObject))) ->
           let aliasName = alias |> Option.map (ExprUtils.GetName)
           let name = ExprUtils.GetName schemaObject |> String.concat "."
@@ -207,10 +207,10 @@ let rec processJoins (ctx:JoinAnalyzer) (table:TableReference) (depth:int) : uni
     processJoins ctx join (depth + 1)
   | TableReference.JoinTableReference(join) ->
     match join with
-    | JoinTableReference.UnqualifiedJoin(FirstTableReference=Some(firstTableReference); SecondTableReference=Some(secondTableReference)) ->
+    | JoinTableReference.UnqualifiedJoin(firstTableReference=Some(firstTableReference); secondTableReference=Some(secondTableReference)) ->
       processJoins ctx firstTableReference depth
       processJoins ctx secondTableReference depth
-    | JoinTableReference.QualifiedJoin(FirstTableReference=Some(firstTableReference); SecondTableReference=Some(secondTableReference); SearchCondition=searchCond) ->
+    | JoinTableReference.QualifiedJoin(firstTableReference=Some(firstTableReference); secondTableReference=Some(secondTableReference); searchCondition=searchCond) ->
       processJoins ctx firstTableReference depth
       processJoins ctx secondTableReference depth
       searchCond |> Option.iter (fun searchCond -> ctx.AddConditions searchCond)
