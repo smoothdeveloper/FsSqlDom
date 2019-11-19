@@ -46,7 +46,7 @@ type Util =
       match script with
       | TSqlBatch.TSqlBatch(statement::_) ->
         match statement with
-        | TSqlStatement.StatementWithCtesAndXmlNamespaces(StatementWithCtesAndXmlNamespaces.SelectStatement(SelectStatement.Base(QueryExpression = qexpr))) ->
+        | TSqlStatement.StatementWithCtesAndXmlNamespaces(StatementWithCtesAndXmlNamespaces.SelectStatement(SelectStatement.Base(queryExpression = qexpr))) ->
           qexpr
         | _ -> None
       | _ -> None

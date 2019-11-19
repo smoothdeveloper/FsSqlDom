@@ -1,12 +1,21 @@
 #r "System.dll"
 #r "../../lib/Microsoft.SqlServer.TransactSql.ScriptDom.dll"
-
 // Warning: Bad code
+
 
 open System
 open System.Reflection
 open System.Collections.Generic
 open Microsoft.SqlServer.TransactSql
+let decapitalize(text:string) =
+  let map =
+    [|'A'..'Z'|]
+    |> Array.map (fun up -> up, (string up).ToLower())
+    |> dict
+  let first = text.[0]
+  match map.TryGetValue first with
+  | true, v -> string v + text.[1..]
+  | false, _ -> text
 
 type TypeHier =
   { typ: Type
@@ -21,7 +30,35 @@ type TypeHier =
 
 and RenderStrategy = RenderChildren | RenderProps
 
-type CodeGenCtx(sb:Text.StringBuilder) = 
+let objTp = typeof<System.Object>
+let startTp = typeof<ScriptDom.TSqlFragment>
+
+let listTypes(addType) =
+  let asm = Assembly.GetAssembly(startTp)
+  let hier = { typ = startTp; children = Map.empty }
+  Array.fold addType hier (asm.GetTypes())
+
+type Options = 
+  {
+    useRequireQualifiedAccess : TypeHier -> bool
+    useOption : Type -> bool
+  }
+  static member init =
+    { 
+      useRequireQualifiedAccess = fun _ -> false
+      useOption = fun t ->
+        if t = typeof<string> then false else
+        
+        true
+    }
+let duFieldName (text: string) =
+  let text = decapitalize text 
+  match text with
+  | "to" | "member" | "function"
+  | "namespace" 
+    -> text + "_"
+  | _ -> text
+type CodeGenCtx(sb:Text.StringBuilder, options: Options) = 
   let typeHasChildren     = Dictionary<Type, bool>(8000)
   let propReferencedTypes = HashSet<Type>()
   let topLevelTypes       = HashSet<Type>()
@@ -38,8 +75,6 @@ type CodeGenCtx(sb:Text.StringBuilder) =
   let doesTypeHaveChildren (typ:Type) = 
     typeHasChildren.ContainsKey(typ) && typeHasChildren.[typ]
 
-  let objTp = typeof<System.Object>
-  let startTp = typeof<ScriptDom.TSqlFragment>
 
   let typesUntilStart (typ: Type) =
     let rec impl (ts: Type list) (typ:Type) =
@@ -120,7 +155,11 @@ type CodeGenCtx(sb:Text.StringBuilder) =
       | x -> failwithf "Unhandled gen arguments ary: %A" x
     elif not <| typ.IsGenericType then
       if typ.IsEnum || typ.IsValueType then x.getDestTypeName (typ)
-      else sprintf "%s option" (x.getDestTypeName typ)
+      else 
+        if options.useOption typ then
+          sprintf "%s option" (x.getDestTypeName typ)
+        else
+          (x.getDestTypeName typ)
     else
       failwithf "Can't handle type %A" (typ)
 
@@ -169,14 +208,23 @@ type CodeGenCtx(sb:Text.StringBuilder) =
       match prop.PropertyType.Namespace with
       | "Microsoft.SqlServer.TransactSql.ScriptDom" when not prop.PropertyType.IsEnum && not prop.PropertyType.IsValueType ->
         if doesTypeHaveChildren (prop.PropertyType) then
-          sprintf "(src.%s |> Option.ofObj |> Option.map (%s.FromCs))" (prop.Name) tname
+          if options.useOption prop.PropertyType then
+            sprintf "(src.%s |> Option.ofObj |> Option.map (%s.FromCs))" (prop.Name) tname
+          else
+            sprintf "(src.%s |> (%s.FromCs))" (prop.Name) tname
         else
-          sprintf "(src.%s |> Option.ofObj |> Option.map (%s.FromCs))" (prop.Name) baseName
+          if options.useOption prop.PropertyType then
+            sprintf "(src.%s |> Option.ofObj |> Option.map (%s.FromCs))" (prop.Name) baseName
+          else
+            sprintf "(src.%s |> (%s.FromCs))" (prop.Name) baseName
       | _ ->
         if prop.PropertyType.IsValueType then
           sprintf "(src.%s)" (prop.Name)
         else
-           sprintf "(Option.ofObj (src.%s))" (prop.Name)
+          if options.useOption prop.PropertyType then
+            sprintf "(Option.ofObj (src.%s))" (prop.Name)
+          else
+            sprintf "(src.%s)" (prop.Name)
 
   member x.getMapping_ToCs (typ:Type) =
     match typ.Namespace with
@@ -219,13 +267,17 @@ type CodeGenCtx(sb:Text.StringBuilder) =
         else typ.BaseType.Name, typ.Name
       match prop.PropertyType.Namespace with
       | "Microsoft.SqlServer.TransactSql.ScriptDom" when not prop.PropertyType.IsEnum && not prop.PropertyType.IsValueType ->
-        wl "%s%s <- %s |> Option.map (fun x -> x.ToCs()) |> Option.toObj" indent propAccess varname
+        if options.useOption typ then
+          wl "%s%s <- %s |> Option.map (fun x -> x.ToCs()) |> Option.toObj" indent propAccess varname
+        else
+          wl "%s%s <- let x = %s in  (if isNull (box x) then null else x.ToCs())" indent propAccess varname
       | _ ->
         if prop.PropertyType.IsValueType then
           wl "%s%s <- %s" indent propAccess varname
-        else
+        elif options.useOption typ then
           wl "%s%s <- %s |> Option.toObj" indent propAccess varname
-
+        else
+          wl "%s%s <- %s" indent propAccess varname
   member this.printTree (tree:TypeHier) (sb:Text.StringBuilder) (depth: int) =
     let start = String(' ', depth * 2)
     sb.Append(start) |> ignore
@@ -259,10 +311,7 @@ type CodeGenCtx(sb:Text.StringBuilder) =
               failwith "Unhandled!"
             | _ -> typ.Name
 
-  member this.listTypes() =
-    let asm = Assembly.GetAssembly(startTp)
-    let hier = { typ = startTp; children = Map.empty }
-    Array.fold addType hier (asm.GetTypes())
+  member this.listTypes() = listTypes addType
 
   member  this.renderPropsTS (thier:TypeHier) (asBase:bool) =
     if not asBase && thier.children.Count > 0 then
@@ -288,7 +337,7 @@ type CodeGenCtx(sb:Text.StringBuilder) =
 
       for i in [0..props.Length - 1] do
         let prop = props.[i]
-        w "%s:%s" (prop.Name) (x.getDestPropName prop.PropertyType)
+        w "%s:%s" (duFieldName prop.Name) (x.getDestPropName prop.PropertyType)
         if i <> props.Length - 1 then w " * "
 
   member x.decapitalizePropName(propName:string) =
@@ -296,7 +345,7 @@ type CodeGenCtx(sb:Text.StringBuilder) =
 
   member x.renderPropsDestructure(typ:Type) =
     [ for p in getProps typ do
-        yield sprintf "%s=%s" (p.Name) (x.decapitalizePropName (p.Name)) ]
+        yield sprintf "%s=%s" (duFieldName p.Name) (x.decapitalizePropName (p.Name)) ]
     |> String.concat "; "
 
   member x.renderSetProps_FromFSharp (varname:string) (indentLevel:int) (typ:Type) =
@@ -304,7 +353,42 @@ type CodeGenCtx(sb:Text.StringBuilder) =
     for p in getProps typ do
       let propAccess = sprintf "%s.%s" varname p.Name
       x.writePropertyMutation_FromFS propAccess indentLevel p typ
-
+  member x.renderSharedProperties (tree:TypeHier) (targetTyp:Type option) =
+    let props = getProps tree.typ
+    if props.Length = 0 then () else
+    wl "//// shared props %s "tree.typ.Name
+    for p in getProps tree.typ do
+      match targetTyp with
+      | Some targetTyp ->
+        wl
+          "  member this.%s = let (%s.%s(%s=x)) = this in x"
+          p.Name
+          tree.typ.Name
+          (targetTyp.Name)
+          (duFieldName p.Name)
+      | None ->
+        wl "  member this.%s = " p.Name
+        wl "    match this with"
+        if not tree.typ.IsAbstract then
+          wl 
+            "    | Base (%s=%s) -> %s"
+            (duFieldName p.Name)
+            (duFieldName p.Name)
+            (duFieldName p.Name)
+        for c in tree.children do
+          let c = c.Value
+          if c.typ.IsAbstract || c.children.Count > 0 then 
+            wl 
+              "    | %s _ as x -> x.%s" 
+              c.typ.Name
+              p.Name
+          else
+            wl 
+              "    | %s(%s=%s) -> %s"
+              c.typ.Name
+              (duFieldName p.Name)
+              (duFieldName p.Name)
+              (duFieldName p.Name)
   member x.renderConstructCSType (tree:TypeHier) (targetTyp:Type) =
     match x.renderPropsDestructure tree.typ with
     | "" ->
@@ -354,8 +438,10 @@ type CodeGenCtx(sb:Text.StringBuilder) =
       let tree = q.Dequeue()
     
       if duNum = 0 then w "type " else w "and "
-    
-      w "[<RequireQualifiedAccess>] %s = (* IsAbstract = %b *)\n" (tree.typ.Name) (tree.typ.IsAbstract)
+      
+      if options.useRequireQualifiedAccess tree then
+        w "[<RequireQualifiedAccess>] "
+      w "%s = (* IsAbstract = %b , children = %i*)\n" (tree.typ.Name) (tree.typ.IsAbstract) tree.children.Count
 
       let ctyps = tree.SortedChildren()
 
@@ -366,14 +452,14 @@ type CodeGenCtx(sb:Text.StringBuilder) =
         
         for ctyp in ctyps do
           if ctyp.children.Count > 0 then
-            w "  | %s of %s" (ctyp.typ.Name) (ctyp.typ.Name)
+            w "  | %s of %s:%s" (ctyp.typ.Name) (duFieldName ctyp.typ.Name)(ctyp.typ.Name)
           else
             x.renderDUcase ctyp.typ None
       
           w "\n"
 
         x.renderToCSMethod tree tree.typ
-
+        x.renderSharedProperties tree None
         w "  static member FromCs(src:ScriptDom.%s) : %s =\n" (tree.typ.Name) (tree.typ.Name)
         w "    match src with\n"
         for ctyp in ctyps do
@@ -418,18 +504,25 @@ type CodeGenCtx(sb:Text.StringBuilder) =
           q.Enqueue(subtree)
     wl "// Rendering missing cases"
     for typ in missingCases do
+      if typ.IsEnum then () else
       let tree = { TypeHier.children = Map.empty; typ = typ }
       //if doesTypeHaveChildren typ then failwith "logic error"
       let recordTypesStr = 
         [| for prop in getProps typ do
-            yield sprintf "%s:%s" (prop.Name) (x.getDestPropName prop.PropertyType) |]
+            yield sprintf "%s:%s" (duFieldName prop.Name) (x.getDestPropName prop.PropertyType) |]
         |> String.concat " * "
         |> fun s -> if s <> "" then "of " + s else s
-      w "and [<RequireQualifiedAccess>] %s = (* Abstract? = %b *)\n  | %s %s  \n" typ.Name typ.IsAbstract typ.Name recordTypesStr 
+      if typ.Name = "WindowFrameType" then 
+        printfn "ffoo"
+      w "and "  
+      if options.useRequireQualifiedAccess tree then
+        w "[<RequireQualifiedAccess>] "
+      w "%s = (* IsAbstract = %b , children = %i*)\n  | %s %s  \n" typ.Name typ.IsAbstract tree.children.Count typ.Name recordTypesStr 
       let upcastStr = ""
       //renderProps tree.typ
       //if not (typ.IsAbstract) then 
       x.renderToCSMethod tree typ
+      x.renderSharedProperties tree (Some typ)
       w "  static member FromCs(src:ScriptDom.%s) : %s =\n" (typ.Name) (typ.Name)
 
       match getProps typ with
@@ -477,8 +570,9 @@ open Microsoft.SqlServer.TransactSql
 """
   let sb = Text.StringBuilder(filePrelude)
 
-  let ctx = CodeGenCtx(sb)
+  let ctx = CodeGenCtx(sb, Options.init)
   let tree = ctx.listTypes()
+  
   ctx.processTree tree
 
   ctx.printDUs tree sb
@@ -487,3 +581,5 @@ open Microsoft.SqlServer.TransactSql
 
   let treeSb = Text.StringBuilder()
   ctx.printTree tree treeSb 0
+
+//buildLib()

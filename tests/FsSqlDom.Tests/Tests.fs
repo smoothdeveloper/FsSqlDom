@@ -17,9 +17,9 @@ let ``converting parsed result`` () =
                                          _orderByClause, _selectElements, _topRowFilter, _uniqueRowFilter, _whereClause)) -> 
         
       match tref with
-      | TableReference.TableReferenceWithAlias(
-          TableReferenceWithAlias.NamedTableReference(
-            SchemaObject=Some(SchemaObjectName.Base(BaseIdentifier = Some(a))))) ->
+      | TableReference.TableReferenceWithAlias
+          (TableReferenceWithAlias.NamedTableReference
+            (schemaObject=Some(SchemaObjectName.Base(baseIdentifier = Some(a))))) ->
           match a with
-          | Identifier.Base(Value=Some(v)) -> 
+          | Identifier.Base(value=v) -> 
             Assert.AreEqual(v, "foo")
